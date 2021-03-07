@@ -1,23 +1,24 @@
 use discv5::enr::{CombinedKey, EnrBuilder, NodeId};
 use discv5::{Discv5, Discv5Config};
+use log::info;
 use std::net::{IpAddr, SocketAddr};
 
-type Enr = discv5::enr::Enr<CombinedKey>;
+pub type Enr = discv5::enr::Enr<CombinedKey>;
 
 pub const PROTOCOL: &str = "state-network";
 
 #[derive(Clone)]
 pub struct Config {
-    listen_address: IpAddr,
-    listen_port: u16,
-    discv5_config: Discv5Config,
-    bootnode_enrs: Vec<Enr>,
+    pub listen_address: IpAddr,
+    pub listen_port: u16,
+    pub discv5_config: Discv5Config,
+    pub bootnode_enrs: Vec<Enr>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            listen_address: "0.0.0.0".parse().expect("valid ip address"),
+            listen_address: "127.0.0.1".parse().expect("valid ip address"),
             listen_port: 4242,
             discv5_config: Discv5Config::default(),
             bootnode_enrs: vec![],
@@ -32,7 +33,7 @@ pub struct Discovery {
 }
 
 impl Discovery {
-    pub async fn new(config: Config, protocol_callback: ) -> Result<Self, String> {
+    pub async fn new(config: Config) -> Result<Self, String> {
         let enr_key = CombinedKey::generate_secp256k1();
 
         let listen_socket = SocketAddr::new(config.listen_address, config.listen_port);
@@ -43,10 +44,14 @@ impl Discovery {
             builder.udp(config.listen_port);
             builder.build(&enr_key).unwrap()
         };
+
+        info!("Starting discv5 service with enr: {:?}", enr);
+
         let mut discv5 = Discv5::new(enr, enr_key, config.discv5_config)
             .map_err(|e| format!("Failed to create discv5 instance: {}", e))?;
 
         for enr in config.bootnode_enrs {
+            info!("Adding bootnode");
             discv5
                 .add_enr(enr)
                 .map_err(|e| format!("Failed to add enr: {}", e))?;
@@ -58,14 +63,28 @@ impl Discovery {
         Ok(Self { discv5 })
     }
 
-    pub async fn discover_nodes(&mut self) -> Result<Vec<Enr>, String> {
+    /// Returns number of connected peers in the dht
+    pub fn connected_peers(&self) -> usize {
+        self.discv5.connected_peers()
+    }
+
+    /// Do a FindNode query and add the discovered peers to the dht
+    pub async fn discover_nodes(&mut self) -> Result<(), String> {
         let random_node = NodeId::random();
         let nodes = self
             .discv5
             .find_node(random_node)
             .await
             .map_err(|e| format!("FindNode query failed: {:?}", e))?;
-        Ok(nodes)
+
+        info!("FindNode query found {} nodes", nodes.len());
+
+        for node in nodes {
+            self.discv5
+                .add_enr(node)
+                .map_err(|e| format!("Failed to add node to dht: {}", e))?;
+        }
+        Ok(())
     }
 
     pub async fn send_request(
