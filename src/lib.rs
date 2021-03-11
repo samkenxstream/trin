@@ -4,6 +4,7 @@ use log::{error, info};
 use parking_lot::RwLock;
 use std::{collections::HashMap, time::Duration};
 use tokio::time::sleep;
+mod alexandria;
 pub mod discovery;
 
 pub const DISCOVERY_INTERVAL: u64 = 30;
