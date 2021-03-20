@@ -1,11 +1,8 @@
+use super::{protocol::PROTOCOL, Enr};
 use discv5::enr::{CombinedKey, EnrBuilder, NodeId};
-use discv5::{Discv5, Discv5Config};
+use discv5::{Discv5, Discv5Config, TalkReqHandler};
 use log::info;
 use std::net::{IpAddr, SocketAddr};
-
-pub type Enr = discv5::enr::Enr<CombinedKey>;
-
-pub const PROTOCOL: &str = "state-network";
 
 #[derive(Clone)]
 pub struct Config {
@@ -33,7 +30,10 @@ pub struct Discovery {
 }
 
 impl Discovery {
-    pub async fn new(config: Config) -> Result<Self, String> {
+    pub async fn new(
+        config: Config,
+        protocol: Option<Box<dyn TalkReqHandler>>,
+    ) -> Result<Self, String> {
         let enr_key = CombinedKey::generate_secp256k1();
 
         let listen_socket = SocketAddr::new(config.listen_address, config.listen_port);
@@ -57,7 +57,7 @@ impl Discovery {
                 .map_err(|e| format!("Failed to add enr: {}", e))?;
         }
         discv5
-            .start(listen_socket)
+            .start(listen_socket, protocol)
             .await
             .map_err(|e| format!("Failed to start discv5 server {:?}", e))?;
         Ok(Self { discv5 })
@@ -66,6 +66,10 @@ impl Discovery {
     /// Returns number of connected peers in the dht
     pub fn connected_peers(&self) -> usize {
         self.discv5.connected_peers()
+    }
+
+    pub fn local_enr(&self) -> Enr {
+        self.discv5.local_enr()
     }
 
     /// Do a FindNode query and add the discovered peers to the dht
@@ -87,8 +91,13 @@ impl Discovery {
         Ok(())
     }
 
-    pub async fn send_request(
-        &mut self,
+    /// Returns closest nodes according to given distances.
+    pub fn find_nodes_response(&self, distances: Vec<u64>) -> Vec<Enr> {
+        self.discv5.nodes_by_distance(distances)
+    }
+
+    pub async fn send_talkreq(
+        &self,
         enr: Enr,
         request: ProtocolRequest,
     ) -> Result<Vec<u8>, String> {
