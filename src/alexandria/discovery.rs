@@ -27,16 +27,13 @@ pub type ProtocolRequest = Vec<u8>;
 
 pub struct Discovery {
     discv5: Discv5,
+    /// Indicates if the discv5 service has been started
+    pub started: bool,
 }
 
 impl Discovery {
-    pub async fn new(
-        config: Config,
-        protocol: Option<Box<dyn TalkReqHandler>>,
-    ) -> Result<Self, String> {
+    pub fn new(config: Config) -> Result<Self, String> {
         let enr_key = CombinedKey::generate_secp256k1();
-
-        let listen_socket = SocketAddr::new(config.listen_address, config.listen_port);
 
         let enr = {
             let mut builder = EnrBuilder::new("v4");
@@ -56,11 +53,25 @@ impl Discovery {
                 .add_enr(enr)
                 .map_err(|e| format!("Failed to add enr: {}", e))?;
         }
-        discv5
+
+        Ok(Self {
+            discv5,
+            started: false,
+        })
+    }
+
+    pub async fn start(
+        &mut self,
+        listen_socket: SocketAddr,
+        protocol: Option<Box<dyn TalkReqHandler>>,
+    ) -> Result<(), String> {
+        let _ = self
+            .discv5
             .start(listen_socket, protocol)
             .await
-            .map_err(|e| format!("Failed to start discv5 server {:?}", e))?;
-        Ok(Self { discv5 })
+            .map_err(|e| format!("Failed to start discv5 server: {:?}", e))?;
+        self.started = true;
+        Ok(())
     }
 
     /// Returns number of connected peers in the dht

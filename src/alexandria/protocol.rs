@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use super::{
     discovery::{Config as DiscoveryConfig, Discovery},
     types::{FindContent, FindNodes, FoundContent, Nodes, Ping, Pong, Request, Response},
@@ -5,15 +7,22 @@ use super::{
 };
 use super::{types::Message, Enr};
 use discv5::{Discv5ConfigBuilder, TalkReqHandler};
+use tokio::sync::mpsc;
 
 pub const PROTOCOL: &str = "state-network";
 
 pub struct AlexandriaProtocol {
     discovery: Discovery,
     data_radius: U256,
+    protocol_receiver: mpsc::UnboundedReceiver<(Request, mpsc::Sender<Result<Response, String>>)>,
 }
 
-impl TalkReqHandler for AlexandriaProtocol {
+#[derive(Clone)]
+pub struct ProtocolHandler {
+    protocol_sender: mpsc::UnboundedSender<(Request, mpsc::Sender<Result<Response, String>>)>,
+}
+
+impl TalkReqHandler for ProtocolHandler {
     fn talkreq_response(&self, protocol: &[u8], req: &[u8]) -> Vec<u8> {
         if let Ok(protocol) = String::from_utf8(protocol.to_vec()) {
             if protocol != PROTOCOL {
@@ -23,7 +32,18 @@ impl TalkReqHandler for AlexandriaProtocol {
                 Err(e) => format!("INVALID REQUEST: {}", e).as_bytes().to_vec(),
                 Ok(msg) => {
                     if let Message::Request(req) = msg {
-                        Message::Response(self.handle_request(req)).to_bytes()
+                        let (tx, mut rx) = mpsc::channel(1);
+                        if let Err(_) = self.protocol_sender.send((req, tx)) {
+                            return "Internal error".as_bytes().to_vec();
+                        }
+                        let resp = std::thread::spawn(move || match rx.blocking_recv() {
+                            None => "Internal error".as_bytes().to_vec(),
+                            Some(r) => match r {
+                                Ok(resp) => Message::Response(resp).to_bytes(),
+                                Err(e) => format!("Internal error {}", e).as_bytes().to_vec(),
+                            },
+                        });
+                        resp.join().unwrap()
                     } else {
                         "INVALID MESSAGE".as_bytes().to_vec()
                     }
@@ -36,7 +56,7 @@ impl TalkReqHandler for AlexandriaProtocol {
 }
 
 impl AlexandriaProtocol {
-    pub async fn new(port: u16, boot_nodes: Vec<Enr>, data_radius: U256) -> Self {
+    pub async fn new(port: u16, boot_nodes: Vec<Enr>, data_radius: U256) -> Result<Self, String> {
         let disv5_config = Discv5ConfigBuilder::default().build();
 
         let mut config = DiscoveryConfig::default();
@@ -44,11 +64,21 @@ impl AlexandriaProtocol {
         config.listen_port = port;
         config.bootnode_enrs = boot_nodes;
 
-        let discovery = Discovery::new(config, None).await.unwrap();
-        Self {
+        let local_socket = SocketAddr::new(config.listen_address, config.listen_port);
+
+        let mut discovery = Discovery::new(config).unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handler = ProtocolHandler {
+            protocol_sender: tx,
+        };
+        discovery
+            .start(local_socket, Some(Box::new(handler)))
+            .await?;
+        Ok(Self {
             discovery,
             data_radius,
-        }
+            protocol_receiver: rx,
+        })
     }
 
     pub async fn send_ping(
