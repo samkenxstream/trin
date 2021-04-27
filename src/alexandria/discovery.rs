@@ -44,6 +44,7 @@ impl Discovery {
 
         info!("Starting discv5 service with enr: {:?}", enr);
 
+        info!("Self enr: {}", enr);
         let mut discv5 = Discv5::new(enr, enr_key, config.discv5_config)
             .map_err(|e| format!("Failed to create discv5 instance: {}", e))?;
 
@@ -75,8 +76,12 @@ impl Discovery {
     }
 
     /// Returns number of connected peers in the dht
-    pub fn connected_peers(&self) -> usize {
+    pub fn connected_peers_len(&self) -> usize {
         self.discv5.connected_peers()
+    }
+
+    pub fn connected_peers(&mut self) -> Vec<NodeId> {
+        self.discv5.table_entries_id()
     }
 
     pub fn local_enr(&self) -> Enr {

@@ -7,6 +7,7 @@ use super::{
 };
 use super::{types::Message, Enr};
 use discv5::{Discv5ConfigBuilder, TalkReqHandler};
+use log::warn;
 use tokio::sync::mpsc;
 
 pub const PROTOCOL: &str = "state-network";
@@ -26,10 +27,10 @@ impl TalkReqHandler for ProtocolHandler {
     fn talkreq_response(&self, protocol: &[u8], req: &[u8]) -> Vec<u8> {
         if let Ok(protocol) = String::from_utf8(protocol.to_vec()) {
             if protocol != PROTOCOL {
-                return "INVALID PROTOCOL".as_bytes().to_vec();
+                return "Invalid protocol".as_bytes().to_vec();
             }
             match Message::from_bytes(req) {
-                Err(e) => format!("INVALID REQUEST: {}", e).as_bytes().to_vec(),
+                Err(e) => format!("Invalid request: {}", e).as_bytes().to_vec(),
                 Ok(msg) => {
                     if let Message::Request(req) = msg {
                         let (tx, mut rx) = mpsc::channel(1);
@@ -45,12 +46,12 @@ impl TalkReqHandler for ProtocolHandler {
                         });
                         resp.join().unwrap()
                     } else {
-                        "INVALID MESSAGE".as_bytes().to_vec()
+                        "Invalid message".as_bytes().to_vec()
                     }
                 }
             }
         } else {
-            "INVALID PROTOCOL".as_bytes().to_vec()
+            "Invalid protocol".as_bytes().to_vec()
         }
     }
 }
@@ -114,30 +115,37 @@ impl AlexandriaProtocol {
             .await
     }
 
-    pub fn handle_request(&self, request: Request) -> Response {
-        match request {
-            Request::Ping(Ping {
-                enr_seq,
-                data_radius,
-            }) => {
-                let enr_seq = self.discovery.local_enr().seq();
-                Response::Pong(Pong {
-                    enr_seq: enr_seq as u32,
-                    data_radius: self.data_radius,
-                })
-            }
+    /// Receives a request from the talkreq handler and sends a response back
+    pub fn process_request(mut self, handle: tokio::runtime::Handle) {
+        let fut = async move {
+            while let Some((request, channel)) = self.protocol_receiver.recv().await {
+                let response = match request {
+                    Request::Ping(Ping { .. }) => {
+                        let enr_seq = self.discovery.local_enr().seq();
+                        Response::Pong(Pong {
+                            enr_seq: enr_seq as u32,
+                            data_radius: self.data_radius,
+                        })
+                    }
 
-            Request::FindNodes(FindNodes { distances }) => {
-                let enrs = self.discovery.find_nodes_response(distances);
-                Response::Nodes(Nodes {
-                    total: enrs.len() as u8,
-                    enrs,
-                })
+                    Request::FindNodes(FindNodes { distances }) => {
+                        let enrs = self.discovery.find_nodes_response(distances);
+                        Response::Nodes(Nodes {
+                            total: enrs.len() as u8,
+                            enrs,
+                        })
+                    }
+                    // TODO
+                    Request::FindContent(FindContent { .. }) => {
+                        Response::FoundContent(FoundContent { enrs: vec![] })
+                    }
+                };
+                if let Err(e) = channel.send(Ok(response)).await {
+                    warn!("Failed to respond to talkreq channel: {}", e);
+                }
             }
-            // TODO
-            Request::FindContent(FindContent { content_key }) => {
-                Response::FoundContent(FoundContent { enrs: vec![] })
-            }
-        }
+        };
+
+        handle.spawn(fut);
     }
 }
